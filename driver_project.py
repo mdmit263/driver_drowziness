@@ -17,7 +17,7 @@ from queue import Queue, Empty
 from collections import deque, defaultdict
 
 # ---------------------- Configuration ----------------------
-ALERT_WAV = r"alert.wav"   # <-- update this
+ALERT_WAV = r"D:/downloads/alert.wav"   # <-- update this
 TWILIO_SID = "YOUR_ACCOUNT_SID"
 TWILIO_TOKEN = "YOUR_AUTH_TOKEN"
 TWILIO_FROM = "+1234567890"
@@ -119,3 +119,175 @@ def eye_aspect_ratio(eye):
 
 
 def mouth_aspect_ratio(mouth):
+    if len(mouth) < 7:
+        return 0.0
+    A = distance.euclidean(mouth[2], mouth[6])
+    B = distance.euclidean(mouth[3], mouth[5])
+    C = distance.euclidean(mouth[0], mouth[1])
+    return (A + B) / (2.0 * C) if C != 0 else 0.0
+
+
+def head_pitch(landmarks, w, h):
+    nose = np.array([landmarks[1].x * w, landmarks[1].y * h])
+    chin = np.array([landmarks[152].x * w, landmarks[152].y * h])
+    dy = chin[1] - nose[1]
+    dx = chin[0] - nose[0]
+    return np.degrees(np.arctan2(dy, dx))
+
+# ---------------- Video processor ----------------
+class DrowsinessProcessor(VideoProcessorBase):
+    def __init__(self):
+        self.closed_counter = 0
+        self.recent_ear = deque(maxlen=MOVING_AVG_FRAMES)
+        self.recent_mar = deque(maxlen=5)
+
+    def recv(self, frame):
+        img = frame.to_ndarray(format="bgr24")
+        if img is None or img.size == 0:
+            img = np.zeros((480, 640, 3), dtype=np.uint8)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        h, w = img.shape[:2]
+
+        if st.session_state.get("NIGHT_MODE", False):
+            gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+            gray = cv2.equalizeHist(gray)
+            img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+
+        rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        try:
+            results = face_mesh_model.process(rgb)
+        except Exception as e:
+            print("FaceMesh processing error:", e)
+            return av.VideoFrame.from_ndarray(img, format="bgr24")
+
+        event_emitted = False
+        EAR = MAR = pitch = 0.0
+
+        multi_face_landmarks = getattr(results, "multi_face_landmarks", None)
+        if multi_face_landmarks:
+            landmarks = multi_face_landmarks[0].landmark
+            left_eye = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in LEFT_EYE]
+            right_eye = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in RIGHT_EYE]
+
+            left_ear = eye_aspect_ratio(left_eye)
+            right_ear = eye_aspect_ratio(right_eye)
+            EAR = float((left_ear + right_ear) / 2.0)
+            self.recent_ear.append(EAR)
+            smooth_ear = float(np.mean(self.recent_ear))
+
+            mouth_pts = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in OUTER_LIPS]
+            MAR = float(mouth_aspect_ratio(mouth_pts))
+            self.recent_mar.append(MAR)
+
+            pitch = float(head_pitch(landmarks, w, h))
+
+            # detection logic
+            if smooth_ear < EAR_THRESHOLD:
+                self.closed_counter += 1
+            else:
+                if 0 < self.closed_counter <= BLINK_MAX_FRAMES:
+                    pass
+                self.closed_counter = 0
+
+            if self.closed_counter >= EAR_CONSEC_FRAMES:
+                EVENT_QUEUE.put({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "event": "Drowsy",
+                    "EAR": round(smooth_ear, 3),
+                    "MAR": round(MAR, 3),
+                    "pitch": round(pitch, 2),
+                    "sms": "⚠️ Driver Drowsiness Detected!"
+                })
+                event_emitted = True
+                self.closed_counter = EAR_CONSEC_FRAMES // 2
+
+            if MAR > MAR_THRESHOLD:
+                EVENT_QUEUE.put({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "event": "Yawn",
+                    "EAR": round(smooth_ear, 3),
+                    "MAR": round(MAR, 3),
+                    "pitch": round(pitch, 2),
+                    "sms": "⚠️ Driver Yawning Detected!"
+                })
+
+            if abs(pitch) > NOD_THRESHOLD:
+                EVENT_QUEUE.put({
+                    "ts": time.strftime("%H:%M:%S"),
+                    "event": "Head Nod",
+                    "EAR": round(smooth_ear, 3),
+                    "MAR": round(MAR, 3),
+                    "pitch": round(pitch, 2),
+                    "sms": "⚠️ Head Nodding Detected!"
+                })
+
+            for (x, y) in (left_eye + right_eye + mouth_pts):
+                cv2.circle(img, (x, y), 2, (0, 255, 0), -1)
+
+            cv2.putText(img, f"EAR:{smooth_ear:.2f} MAR:{MAR:.2f} Pitch:{pitch:.1f}",
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 20), 2)
+
+        return av.VideoFrame.from_ndarray(img.astype(np.uint8), format="bgr24")
+
+# ---------------- Start WebRTC ----------------
+webrtc_ctx = webrtc_streamer(
+    key="drowsiness",
+    video_processor_factory=DrowsinessProcessor,
+    rtc_configuration={"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]},
+    media_stream_constraints={"video": True, "audio": False},
+    async_processing=True
+)
+
+# ---------------- UI update function ----------------
+def drain_event_queue_and_update():
+    updated = False
+    while True:
+        try:
+            item = EVENT_QUEUE.get_nowait()
+        except Empty:
+            break
+
+        st.session_state.EVENTS_DF = pd.concat([
+            st.session_state.EVENTS_DF,
+            pd.DataFrame([[item["ts"], item["event"], item["EAR"], item["MAR"], item["pitch"]]],
+                         columns=st.session_state.EVENTS_DF.columns)
+        ], ignore_index=True)
+
+        if len(st.session_state.EVENTS_DF) > 200:
+            st.session_state.EVENTS_DF = st.session_state.EVENTS_DF.iloc[-200:].reset_index(drop=True)
+
+        st.session_state.EAR_HISTORY.append(item["EAR"])
+        st.session_state.MAR_HISTORY.append(item["MAR"])
+
+        if sms_text := item.get("sms"):
+            send_sms_background(sms_text)
+
+        updated = True
+    return updated
+
+# Show current events & chart
+def show_ui():
+    if not st.session_state.EVENTS_DF.empty:
+        df_rev = st.session_state.EVENTS_DF.iloc[::-1]
+        events_container.dataframe(df_rev.reset_index(drop=True), use_container_width=True)
+    else:
+        events_container.info("No events yet")
+
+    ear = st.session_state.EAR_HISTORY[-200:]
+    mar = st.session_state.MAR_HISTORY[-200:]
+    if ear and mar:
+        L = max(len(ear), len(mar))
+        ear_p = ear[-L:] if len(ear) >= L else ([None] * (L - len(ear)) + ear)
+        mar_p = mar[-L:] if len(mar) >= L else ([None] * (L - len(mar)) + mar)
+        df_chart = pd.DataFrame({"EAR": ear_p, "MAR": mar_p})
+        chart_container.line_chart(df_chart)
+    else:
+        chart_container.text("Waiting for EAR/MAR data...")
+
+# ---------------- Main loop ----------------
+updated = drain_event_queue_and_update()
+show_ui()
+
+if manual_refresh or updated:
+    st.rerun()
