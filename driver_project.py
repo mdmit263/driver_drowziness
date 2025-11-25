@@ -48,13 +48,15 @@ SMS_COOLDOWN = 120
 # -------------------------------------------------------------------
 # Init pygame (safe guard)
 try:
-    pygame.mixer.init()
-    try:
-        pygame.mixer.music.load(ALERT_WAV)
+    with open(ALERT_WAV, "rb") as f:
+        audio_bytes = f.read()
+        st.session_state["alert_sound"] = audio_bytes  # store so it persists
     except Exception as e:
         print("Warning: could not load alert.wav:", e)
-except Exception as e:
-    print("Warning: pygame init failed:", e)
+
+if "alert_sound" in st.session_state:
+    st.audio(st.session_state["alert_sound"], format="audio/wav", autoplay=True)
+
 
 # Twilio client (used by background thread) - keep even if not used
 try:
@@ -392,3 +394,4 @@ if manual_refresh:
 # This avoids continuous reruns when there is no new data.
 if updated:
     st.rerun()
+
