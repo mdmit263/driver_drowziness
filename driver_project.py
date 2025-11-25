@@ -37,21 +37,24 @@ UI_REFRESH_SEC = 0.5
 # Twilio cooldown (per message text)
 SMS_COOLDOWN = 120
 
-# -------------------------------------------------------------------
-# Twilio client (used by background thread) - keep even if not used
+# ---------------------- Load alert sound ----------------------
+try:
+    with open(ALERT_WAV, "rb") as f:
+        st.session_state["alert_sound"] = f.read()
+except Exception as e:
+    print("Warning: could not load alert.wav:", e)
+
+# ---------------------- Twilio client ----------------------
 try:
     twilio_client = Client(TWILIO_SID, TWILIO_TOKEN)
 except Exception:
     twilio_client = None
 
-# queue where processor will push events (thread-safe)
+# ---------------------- Event queue & SMS tracker ----------------------
 EVENT_QUEUE: Queue = Queue()
-
-# cooldown tracker for SMS
 _sms_last_sent = defaultdict(lambda: 0.0)
 
-# -------------------------------------------------------------------
-# Mediapipe FaceMesh (correct API for 0.10.x)
+# ---------------------- Mediapipe FaceMesh ----------------------
 mp_face_mesh = face_mesh
 face_mesh_model = mp_face_mesh.FaceMesh(
     max_num_faces=1,
@@ -64,7 +67,7 @@ LEFT_EYE = [33, 160, 158, 133, 153, 144]
 RIGHT_EYE = [362, 385, 387, 263, 373, 380]
 OUTER_LIPS = [61, 291, 0, 17, 13, 14, 312, 308]
 
-# ---------------- Streamlit session initialization ----------------
+# ---------------------- Streamlit UI setup ----------------------
 st.set_page_config(layout="wide")
 st.title("🚗 Driver Drowsiness Detection")
 
@@ -91,7 +94,7 @@ with col2:
     stop_button = st.button("Stop Stream", key="stop_button")
     manual_refresh = st.button("Refresh UI", key="manual_refresh")
 
-# ---------------- Helper functions ----------------
+# ---------------------- Helper functions ----------------------
 def send_sms_background(message: str):
     now = time.time()
     last = _sms_last_sent[message]
@@ -110,13 +113,11 @@ def send_sms_background(message: str):
 
     threading.Thread(target=_send, daemon=True).start()
 
-
 def eye_aspect_ratio(eye):
     A = distance.euclidean(eye[1], eye[5])
     B = distance.euclidean(eye[2], eye[4])
     C = distance.euclidean(eye[0], eye[3])
-    return (A + B) / (2.0 * C) if C != 0 else 0.0
-
+    return 0.0 if C == 0 else (A + B) / (2.0 * C)
 
 def mouth_aspect_ratio(mouth):
     if len(mouth) < 7:
@@ -124,8 +125,7 @@ def mouth_aspect_ratio(mouth):
     A = distance.euclidean(mouth[2], mouth[6])
     B = distance.euclidean(mouth[3], mouth[5])
     C = distance.euclidean(mouth[0], mouth[1])
-    return (A + B) / (2.0 * C) if C != 0 else 0.0
-
+    return 0.0 if C == 0 else (A + B) / (2.0 * C)
 
 def head_pitch(landmarks, w, h):
     nose = np.array([landmarks[1].x * w, landmarks[1].y * h])
@@ -134,7 +134,7 @@ def head_pitch(landmarks, w, h):
     dx = chin[0] - nose[0]
     return np.degrees(np.arctan2(dy, dx))
 
-# ---------------- Video processor ----------------
+# ---------------------- Video Processor ----------------------
 class DrowsinessProcessor(VideoProcessorBase):
     def __init__(self):
         self.closed_counter = 0
@@ -144,17 +144,16 @@ class DrowsinessProcessor(VideoProcessorBase):
     def recv(self, frame):
         img = frame.to_ndarray(format="bgr24")
         if img is None or img.size == 0:
-            img = np.zeros((480, 640, 3), dtype=np.uint8)
-            return av.VideoFrame.from_ndarray(img, format="bgr24")
+            return av.VideoFrame.from_ndarray(np.zeros((480, 640, 3), dtype=np.uint8), format="bgr24")
 
         h, w = img.shape[:2]
-
         if st.session_state.get("NIGHT_MODE", False):
             gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
             gray = cv2.equalizeHist(gray)
             img = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
 
         rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+
         try:
             results = face_mesh_model.process(rgb)
         except Exception as e:
@@ -163,13 +162,12 @@ class DrowsinessProcessor(VideoProcessorBase):
 
         event_emitted = False
         EAR = MAR = pitch = 0.0
-
         multi_face_landmarks = getattr(results, "multi_face_landmarks", None)
+
         if multi_face_landmarks:
             landmarks = multi_face_landmarks[0].landmark
             left_eye = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in LEFT_EYE]
             right_eye = [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in RIGHT_EYE]
-
             left_ear = eye_aspect_ratio(left_eye)
             right_ear = eye_aspect_ratio(right_eye)
             EAR = float((left_ear + right_ear) / 2.0)
@@ -182,7 +180,7 @@ class DrowsinessProcessor(VideoProcessorBase):
 
             pitch = float(head_pitch(landmarks, w, h))
 
-            # detection logic
+            # Detection logic
             if smooth_ear < EAR_THRESHOLD:
                 self.closed_counter += 1
             else:
@@ -222,15 +220,20 @@ class DrowsinessProcessor(VideoProcessorBase):
                     "sms": "⚠️ Head Nodding Detected!"
                 })
 
+            # Draw landmarks
             for (x, y) in (left_eye + right_eye + mouth_pts):
                 cv2.circle(img, (x, y), 2, (0, 255, 0), -1)
 
             cv2.putText(img, f"EAR:{smooth_ear:.2f} MAR:{MAR:.2f} Pitch:{pitch:.1f}",
                         (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 20), 2)
 
+            if event_emitted:
+                cv2.putText(img, "⚠️ DROWSINESS ALERT! ⚠️", (50, 100),
+                            cv2.FONT_HERSHEY_SIMPLEX, 1.1, (0, 0, 255), 3)
+
         return av.VideoFrame.from_ndarray(img.astype(np.uint8), format="bgr24")
 
-# ---------------- Start WebRTC ----------------
+# ---------------------- Start WebRTC ----------------------
 webrtc_ctx = webrtc_streamer(
     key="drowsiness",
     video_processor_factory=DrowsinessProcessor,
@@ -239,7 +242,7 @@ webrtc_ctx = webrtc_streamer(
     async_processing=True
 )
 
-# ---------------- UI update function ----------------
+# ---------------------- Event Queue & UI ----------------------
 def drain_event_queue_and_update():
     updated = False
     while True:
@@ -260,13 +263,17 @@ def drain_event_queue_and_update():
         st.session_state.EAR_HISTORY.append(item["EAR"])
         st.session_state.MAR_HISTORY.append(item["MAR"])
 
-        if sms_text := item.get("sms"):
+        sms_text = item.get("sms")
+        if sms_text:
             send_sms_background(sms_text)
 
+        if item["event"] in ["Drowsy", "Yawn"] and "alert_sound" in st.session_state:
+            st.audio(st.session_state["alert_sound"], format="audio/wav", start_time=0)
+
         updated = True
+
     return updated
 
-# Show current events & chart
 def show_ui():
     if not st.session_state.EVENTS_DF.empty:
         df_rev = st.session_state.EVENTS_DF.iloc[::-1]
@@ -285,9 +292,12 @@ def show_ui():
     else:
         chart_container.text("Waiting for EAR/MAR data...")
 
-# ---------------- Main loop ----------------
+# ---------------------- Main Loop ----------------------
 updated = drain_event_queue_and_update()
 show_ui()
 
-if manual_refresh or updated:
+if manual_refresh:
+    st.rerun()
+
+if updated:
     st.rerun()
