@@ -51,8 +51,8 @@ try:
     with open(ALERT_WAV, "rb") as f:
         audio_bytes = f.read()
         st.session_state["alert_sound"] = audio_bytes  # store so it persists
-        except Exception as e:
-            print("Warning: could not load alert.wav:", e)
+except Exception as e:
+    print("Warning: could not load alert.wav:", e)
 
 if "alert_sound" in st.session_state:
     st.audio(st.session_state["alert_sound"], format="audio/wav", autoplay=True)
@@ -394,5 +394,6 @@ if manual_refresh:
 # This avoids continuous reruns when there is no new data.
 if updated:
     st.rerun()
+
 
 
