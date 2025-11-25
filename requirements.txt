@@ -5,3 +5,4 @@ mediapipe==0.10.15
 numpy
 scipy
 av
+twilio==9.2.3
