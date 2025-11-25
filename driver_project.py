@@ -12,7 +12,6 @@ from mediapipe.python.solutions import face_mesh
 import time
 from twilio.rest import Client
 import av
-import pygame
 import threading
 from queue import Queue, Empty
 from collections import deque, defaultdict
@@ -394,6 +393,7 @@ if manual_refresh:
 # This avoids continuous reruns when there is no new data.
 if updated:
     st.rerun()
+
 
 
 
