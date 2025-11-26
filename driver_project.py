@@ -32,10 +32,10 @@ alert_sound_bytes = load_alert_sound()
 # -----------------------------
 
 def eye_aspect_ratio(eye):
-A = dist.euclidean(eye[1], eye[5])
-B = dist.euclidean(eye[2], eye[4])
-C = dist.euclidean(eye[0], eye[3])
-ear = (A + B) / (2.0 * C)
+    A = dist.euclidean(eye[1], eye[5])
+    B = dist.euclidean(eye[2], eye[4])
+    C = dist.euclidean(eye[0], eye[3])
+    ear = (A + B) / (2.0 * C)
 return ear
 
 # -----------------------------
@@ -140,5 +140,6 @@ st.session_state["should_play_alert"] = True
 if st.session_state.get("should_play_alert", False):
 st.audio(alert_sound_bytes, autoplay=True)
 st.session_state["should_play_alert"] = False
+
 
 
