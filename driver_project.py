@@ -22,7 +22,7 @@ from collections import deque, defaultdict
 
 
 # ---------------------- Configuration ----------------------
-ALERT_WAV = r"D:/downloads/alert.wav"   # <-- update this
+ALERT_WAV = r"alert.wav"   # <-- update this
 TWILIO_SID = "YOUR_ACCOUNT_SID"
 TWILIO_TOKEN = "YOUR_AUTH_TOKEN"
 TWILIO_FROM = "+1234567890"
@@ -392,3 +392,4 @@ if manual_refresh:
 # This avoids continuous reruns when there is no new data.
 if updated:
     st.rerun()
+
