@@ -17,11 +17,11 @@ from scipy.spatial import distance as dist
 ALERT_WAV = "alert.wav"
 
 def load_alert_sound():
-try:
-with open(ALERT_WAV, "rb") as f:
-return f.read()
-except:
-return None
+    try:
+        with open(ALERT_WAV, "rb") as f:
+            return f.read()
+    except:
+        return None
 
 alert_sound_bytes = load_alert_sound()
 
@@ -140,4 +140,5 @@ st.session_state["should_play_alert"] = True
 if st.session_state.get("should_play_alert", False):
 st.audio(alert_sound_bytes, autoplay=True)
 st.session_state["should_play_alert"] = False
+
 
