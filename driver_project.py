@@ -117,8 +117,8 @@ if "should_play_alert" not in st.session_state:
 st.session_state["should_play_alert"] = False
 
 def webrtc_callback(frame):
-if vp.drowsy and alert_sound_bytes:
-st.session_state["should_play_alert"] = True
+    if vp.drowsy and alert_sound_bytes:
+        st.session_state["should_play_alert"] = True
 
 RTC_config = RTCConfiguration(
 {"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]}
@@ -140,3 +140,4 @@ st.session_state["should_play_alert"] = True
 if st.session_state.get("should_play_alert", False):
 st.audio(alert_sound_bytes, autoplay=True)
 st.session_state["should_play_alert"] = False
+
